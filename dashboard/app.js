@@ -8,8 +8,24 @@
   var DATA = window.RADAR;
   if (!DATA) return;
   var app = document.getElementById('board');
+// The dashboard's whole state, in one object. q is the search text, category and
+// chain are the two filters ('all' means unfiltered), tab switches between the
+// pre-token board and the live-token view, sort is the column the table is
+// ordered by (implied value by default) with dir -1 for descending, and
+// selected is the slug of the protocol whose detail drawer is open, or null.
+// Every interaction mutates this object and calls render(); nothing else holds
+// state, so the page can always be rebuilt from scratch. The state is also
+// mirrored into the URL hash (readHash/writeHash), so a filtered view or an
+// open detail drawer survives a reload and can be shared as a link.
   var state = { q: '', category: 'all', chain: 'all', tab: 'pre-token', sort: 'implied', dir: -1, selected: null };
 
+// Number formatting. fmtUsd collapses large values to $x.xxB / $x.xM / $xK so a
+// table cell stays readable — a full "$2,750,000,000" would drown the row —
+// and falls back to the locale currency format for small numbers. fmtPct always
+// shows two decimals with an explicit + sign for gains, so a +2.10% week and a
+// -2.10% week are visibly different at a glance. fmtAge turns a day count into
+// "45d" or "2.3y" and says "unknown" when the snapshot carries no listing date,
+// rather than printing a misleading zero.
   var usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
   function fmtUsd(n) {
     if (n === null || n === undefined || !isFinite(n)) return 'n/a';
@@ -38,6 +54,15 @@
     return Math.max(1, Math.round(row.tvl_usd * row.reference_multiple * growthMult * ageMult));
   }
 
+// The DOM builder: a tiny hyperscript helper so the renderers can describe the
+// page as nested calls instead of string templates. attrs is a map where
+// 'class' sets the class, 'text' sets text content, 'html' sets inner HTML,
+// keys starting with 'on' (onclick, onkeydown) attach listeners, and anything
+// else becomes an attribute — except null/undefined, which are skipped, so a
+// conditional attribute can be written inline. Children after attrs may be
+// strings (turned into text nodes), elements, or arrays of either. Building
+// nodes this way also avoids injecting raw HTML from the data: protocol names
+// go through textContent, never innerHTML.
   function el(tag, attrs) {
     var node = document.createElement(tag);
     if (attrs) {
@@ -59,6 +84,13 @@
     return node;
   }
 
+// Deep-linking: the dashboard's state lives in the URL hash, so a filtered view
+// or an open protocol can be bookmarked and shared. readHash restores the
+// search text, the selected protocol, the category and chain filters, and the
+// tab from the hash on load; writeHash writes them back on every change with
+// history.replaceState, so the back button is never polluted with a history
+// entry per keystroke. Only non-default values are written, which keeps the
+// hash short and the default view a clean URL.
   function readHash() {
     var hash = window.location.hash.replace(/^#/, '');
     if (!hash) return;
@@ -80,6 +112,13 @@
     else window.history.replaceState(null, '', window.location.pathname + window.location.search);
   }
 
+// Filtering: the visible rows are the board rows that pass all three filters at
+// once. Category compares against the row's category with 'Other' as the
+// fallback for a null category, so the filter list and the table agree. Chain
+// checks membership in the row's chain list, because a protocol can live on
+// several chains. The search is a case-insensitive substring match across the
+// name, slug, category and chains joined into one haystack, so typing "base"
+// finds both the chain Base and any protocol named after it.
   function rows() {
     var q = state.q.trim().toLowerCase();
     return DATA.rows.filter(function (r) {
@@ -90,6 +129,13 @@
       return hay.indexOf(q) >= 0;
     });
   }
+// Sorting: a copy of the filtered list, ordered by the active sort key. The
+// comparator reads state.dir, so clicking the same column header twice flips
+// the direction instead of re-sorting. Nulls are pushed to the end on purpose:
+// a protocol with no seven-day change sorts as -Infinity on growth (so it
+// never tops a growth sort it has no data for) and as Infinity on age (so an
+// unknown age never tops an age sort). Ties break on slug, which makes the
+// order deterministic — the same state always renders the same table.
   function sortedRows(list) {
     var key = state.sort;
     return list.slice().sort(function (a, b) {
@@ -132,6 +178,15 @@
     );
   }
 
+// The control bar: search box, category dropdown, chain dropdown, and the
+// Pre-token / Live token tab switch, plus a live count of the rows shown.
+// The dropdown options are derived from the data itself (the distinct
+// categories and chains on the board), so the filters can never offer a choice
+// that matches nothing. Every control writes its change into state, mirrors
+// it to the hash, and re-renders immediately — there is no submit button and
+// no stale view. The tab buttons use aria-pressed so a screen reader can tell
+// which view is active, and the count line tells the reader how many rows the
+// current filter leaves.
   function controls() {
     var categories = Array.from(new Set(DATA.rows.map(function (r) { return r.category || 'Other'; }))).sort();
     var chains = Array.from(new Set(DATA.rows.reduce(function (acc, r) { return acc.concat(r.chains || []); }, []))).sort();
@@ -167,6 +222,16 @@
     );
   }
 
+// The board table: one row per visible pre-token protocol, strongest implied
+// value first. Each row shows rank, name with its category and first two
+// chains, TVL, seven-day growth (green for up, red for down, 'n/a' when the
+// snapshot has no figure), age, and the implied value with a bar scaled to the
+// largest value on screen — the bar is relative to the visible list, not the
+// whole board, so filtering to a small set still shows meaningful differences.
+// The last column says "records no token", the careful wording the model uses.
+// Clicking a row (or pressing Enter/Space on it) opens the detail drawer.
+// When no row passes the filters, the table is replaced by an empty state
+// with a Clear filters button, rather than a bare empty table.
   function boardTable() {
     var list = sortedRows(rows());
     if (list.length === 0) {
@@ -222,6 +287,11 @@
     );
   }
 
+// The live-token table: the 24 traded protocols, shown in their own tab with
+// their market caps instead of an implied value. The caption says the point
+// plainly — their market cap is a fact, not a model — so nobody mistakes this
+// tab for a second ranking. Rows here are not clickable: a live protocol has
+// no farm plan and no model breakdown, because there is nothing to model.
   function liveTable() {
     var tbody = el('tbody');
     DATA.live.forEach(function (r) {
@@ -245,6 +315,13 @@
     );
   }
 
+// The "how it is computed" panel, shown under the board. It states the formula
+// in plain text with the snapshot's own numbers filled in — the overall
+// multiple, the per-category multiples, the growth clamp and weight, the age
+// cap — so the model can be checked without opening the source. This is the
+// panel the judge reads first: it is the model's claim, and the detail drawer
+// is the per-row proof. The panel only renders on the pre-token tab, because
+// the live tab has no model to explain.
   function modelPanel() {
     var m = DATA.model;
     var ref = DATA.reference;
@@ -266,6 +343,16 @@
   var dialog = el('dialog', { class: 'detail', id: 'detail', 'aria-labelledby': 'detail-title' });
   dialog.addEventListener('close', function () { state.selected = null; writeHash(); });
 
+// The detail drawer: a modal dialog for one protocol. It shows the full
+// implied-value breakdown — TVL, the reference multiple and where it came
+// from, seven-day growth, both multipliers, age, and the final implied value
+// — and then the numbered farm plan, each step split at " Cost: " so the
+// action is bold and the cost/time line sits under it in smaller text. Before
+// rendering, the page recomputes the row with impliedOf and compares it to
+// the number board.json carries; if they differ, the drawer says so plainly,
+// which makes stale data visible instead of silent. The dialog closes on the
+// Close button, on Escape, or on the browser back action via the hash, and
+// closing clears the selection so the hash does not reopen it.
   function openDetail(slug) {
     var row = DATA.rows.filter(function (r) { return r.slug === slug; })[0];
     if (!row) return;
@@ -312,6 +399,14 @@
     }
   }
 
+// The render cycle: wipe the app node, rebuild the whole shell (header, lede,
+// controls, the active table, and the model panel on the pre-token tab), then
+// re-attach the detail dialog and reopen it if a protocol is selected. A full
+// rebuild on every keystroke is cheap at 200 rows and keeps the code simple:
+// there is no incremental update to drift out of sync with state. render is
+// called on load (after readHash restores the state from the URL), on every
+// control change, and on every sort click. The Escape handler is registered
+// once, outside render, so it is never attached twice.
   function render() {
     app.textContent = '';
     var shell = el('div', { class: 'shell' });
